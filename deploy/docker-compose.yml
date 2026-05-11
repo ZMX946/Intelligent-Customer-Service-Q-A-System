@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  vllm:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../train/awq-model:/app/awq-model
+      - ../models:/app/models
+    environment:
+      - MODEL_PATH=/app/awq-model
+      - VLLM_PORT=8001
+    restart: unless-stopped
+    command: python -m vllm.entrypoints.openai.api_server --model "/app/awq-model" --gpu-memory-utilization 0.8 --max-num-seqs 64 --max-model-len 2048 --enable-prefix-caching --served-model-name customerservice --port 8001 --host 0.0.0.0 --enforce-eager
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  fastapi:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../models:/app/models
+    environment:
+      - VLLM_URL=http://vllm:8001/v1/chat/completions
+      - REDIS_URL=redis://redis:6379
+      - API_PORT=8000
+    depends_on:
+      - redis
+      - vllm
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --log-level info
+
+  gradio:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ../models:/app/models
+    environment:
+      - GRADIO_PORT=7860
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+    command: python gradio_app.py
+
+volumes:
+  redis-data:
